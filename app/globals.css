@@ -1,19 +1,49 @@
 @import "tailwindcss";
 
+/* Theme: follows the system unless <html data-theme> pins it (set by the header toggle). */
+:root {
+  --canvas: #f3f3f4;
+  --ink: #131316;
+  --mute: #5b5b63;
+  --line: #d9d9de;
+  --card: #fbfbfc;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #0d0d10;
+    --ink: #f1f1f3;
+    --mute: #a5a5ae;
+    --line: #2c2c32;
+    --card: #17171b;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --canvas: #0d0d10;
+  --ink: #f1f1f3;
+  --mute: #a5a5ae;
+  --line: #2c2c32;
+  --card: #17171b;
+  color-scheme: dark;
+}
+
 @theme inline {
-  --color-ink: #0a0a0a;
-  --color-paper: #f4f4f2;
-  --color-mute: #8c8c8c;
-  --color-line: #232323;
-  --color-card: #141414;
+  --color-canvas: var(--canvas);
+  --color-ink: var(--ink);
+  --color-mute: var(--mute);
+  --color-line: var(--line);
+  --color-card: var(--card);
+  --color-photo: #fafafa; /* product photos are shot on white, so their frame stays light in both themes */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-serif);
 }
 
 html {
-  background: var(--color-ink);
-  color: var(--color-paper);
+  background: var(--canvas);
+  color: var(--ink);
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -23,8 +53,8 @@ body {
 }
 
 ::selection {
-  background: var(--color-paper);
-  color: var(--color-ink);
+  background: var(--ink);
+  color: var(--canvas);
 }
 
 .tabular {
