@@ -36,7 +36,7 @@ Nutrition context uses EU adult reference intakes as a sense of scale. No health
 - **Additive safety values** (ADI, overexposure estimates) are from [EFSA](https://www.efsa.europa.eu) evaluations, as recorded by Open Food Facts.
 - **Daily limits**: salt and free sugars from WHO guidelines; caffeine from EFSA's 2015 opinion. **Reference intakes** from EU Regulation 1169/2011, Annex XIII.
 - **Barcode reading**: [ZXing for JS](https://github.com/zxing-js) (Apache 2.0) or the browser's built-in `BarcodeDetector`.
-- **Fonts**: Geist and Instrument Serif (SIL Open Font License).
+- **Font**: Outfit (SIL Open Font License).
 
 Not affiliated with or endorsed by Open Food Facts, Wikipedia, the WHO, EFSA or any brand shown.
 
