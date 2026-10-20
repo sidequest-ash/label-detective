@@ -1,5 +1,5 @@
-import LabelDetective from "@/components/LabelDetective";
+import SnackIntel from "@/components/SnackIntel";
 
 export default function Page() {
-  return <LabelDetective />;
+  return <SnackIntel />;
 }

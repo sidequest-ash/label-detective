@@ -1,7 +1,7 @@
 import { parseTaxonomy, type AdditiveTaxonomy } from "./product";
 
 // Open Food Facts and Wikimedia both ask apps to identify themselves: "AppName/Version (ContactEmail)".
-export const UA = process.env.OFF_USER_AGENT ?? "LabelDetective/0.1 (sidequest; set OFF_USER_AGENT in .env.local)";
+export const UA = process.env.OFF_USER_AGENT ?? "SnackIntel/0.1 (sidequest; set OFF_USER_AGENT in .env.local)";
 
 /** Sliding one-minute window. Returns seconds to wait, or 0 and records the hit. */
 export function take(hits: number[], limit: number, now = Date.now()) {

@@ -6,7 +6,7 @@ const sans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Label Detective",
+  title: "Snack Intel",
   description: "Scan a packaged food barcode, read the label in plain language, compare two products.",
 };
 

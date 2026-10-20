@@ -1,4 +1,4 @@
-# Label Detective
+# Snack Intel
 
 Scan a packaged food barcode, read the label in plain language, and compare two products per 100 g / 100 ml.
 
@@ -14,7 +14,7 @@ npm run dev
 Set your contact in `.env.local`, as Open Food Facts asks every app to identify itself:
 
 ```
-OFF_USER_AGENT="LabelDetective/0.1 (you@example.com)"
+OFF_USER_AGENT="SnackIntel/0.1 (you@example.com)"
 ```
 
 The phone camera needs HTTPS, so use a tunnel (e.g. ngrok) or deploy to test scanning on a phone. Add the tunnel's host to `allowedDevOrigins` in `next.config.ts`.

@@ -41,7 +41,7 @@ const save = (k: string, v: unknown) => {
   } catch {}
 };
 
-export default function LabelDetective() {
+export default function SnackIntel() {
   const [view, setView] = useState<View>({ k: "home" });
   const [first, setFirst] = useState<Product | null>(null); // picked as A, waiting for B
   const [scanning, setScanning] = useState(false);
@@ -216,7 +216,7 @@ export default function LabelDetective() {
       <div inert={scanning}>
       <header className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-canvas/80 px-4 py-4 backdrop-blur-xl sm:-mx-8 sm:px-8">
         <button onClick={home} className="font-mono text-[11px] uppercase tracking-[0.25em]">
-          Label Detective
+          Snack Intel
         </button>
         <ThemeToggle />
       </header>
