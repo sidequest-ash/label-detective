@@ -151,7 +151,7 @@ export default function SnackIntel() {
     // ponytail: saved products never refresh; clear history to pick up OFF edits
     // Read storage, not state: popstate and URL loads run from a closure made on first render.
     const local = load<Product[]>("ld:products", []).find((p) => p.code === code);
-    if (local?.parts) return local;
+    if (local && "ingredientsImage" in local) return local; // older saved shapes get refetched
     const now = Date.now();
     while (searches.length && now - searches[0] > 60_000) searches.shift();
     if (searches.length >= PER_MINUTE) {
@@ -160,7 +160,7 @@ export default function SnackIntel() {
     }
     searches.push(now);
     // ?v= changes whenever the Product shape does, so browsers drop responses cached in the old shape.
-    const res = await fetch(`/api/product/${code}?v=3`).catch(() => null);
+    const res = await fetch(`/api/product/${code}?v=4`).catch(() => null);
     const json = await res?.json().catch(() => null);
     if (res?.ok && json?.product) return json.product;
     fail(
@@ -627,7 +627,7 @@ function ProductView({ p, allergies, onCompare }: { p: Product; allergies: strin
       >
         <Thumb p={p} size="h-60 w-full" big />
       </motion.div>
-      <h1 className="mt-5 text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">{p.name}</h1>
+      <h1 dir="auto" className="mt-5 text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">{p.name}</h1>
       <p className="mt-1 text-[15px] text-mute">{[p.brand, p.quantity].filter(Boolean).join(", ") || `Barcode ${p.code}`}</p>
 
       <AllergyWarning p={p} allergies={allergies} className="mt-4" />
@@ -751,10 +751,32 @@ function IngredientsPanel({ p, allergies }: { p: Product; allergies: string[] })
       <IngredientList p={p} />
       <div className="mt-4 rounded-[24px] bg-card px-5 py-4">
         <h2 className="text-[17px] font-semibold">As printed on the pack</h2>
-        <p className="mt-2 text-[15px] leading-relaxed text-ink/85">
-          {p.ingredients || <span className="text-mute">No ingredient list in the record yet.</span>}
-        </p>
-        {p.ingredients && <p className="mt-2 text-xs text-mute">Listed in descending order by weight.</p>}
+        {p.ingredients ? (
+          <>
+            <p dir="auto" className="mt-2 text-[15px] leading-relaxed text-ink/85">{p.ingredients}</p>
+            <p className="mt-2 text-xs text-mute">Listed in descending order by weight.</p>
+          </>
+        ) : (
+          <>
+            <p className="mt-2 text-[15px] leading-relaxed text-mute">
+              {p.ingredientsImage
+                ? "Nobody has typed this product's ingredients in yet, but there's a photo of the list from the pack."
+                : "This product's record has no ingredient list yet. The pack itself will have one."}
+            </p>
+            {p.ingredientsImage && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={p.ingredientsImage} alt={`Ingredient list on the ${p.name} pack`} className="mt-3 w-full rounded-2xl bg-photo object-contain" />
+            )}
+            <a
+              href={`https://world.openfoodfacts.org/product/${p.code}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-block text-sm font-medium text-accent underline underline-offset-4"
+            >
+              Add the ingredients on Open Food Facts
+            </a>
+          </>
+        )}
       </div>
     </div>
   );
@@ -968,7 +990,7 @@ function ProductCard({ p, onClick, disabled }: { p: Product; onClick?: () => voi
   const body = (
     <>
       <Thumb p={p} size="h-[120px] w-full" />
-      <span className="mt-2.5 block truncate text-[15px] font-medium">{p.name}</span>
+      <span dir="auto" className="mt-2.5 block truncate text-[15px] font-medium">{p.name}</span>
       <span className="block truncate text-[13px] text-mute">{[p.brand, p.quantity].filter(Boolean).join(", ") || p.code}</span>
     </>
   );

@@ -81,6 +81,7 @@ export type Product = {
   name: string;
   brand: string;
   image: string | null;
+  ingredientsImage: string | null; // photo of the pack's ingredient list, when nobody has typed it in
   quantity: string;
   serving: number | null; // g or ml
   basis: "100g" | "100ml";
@@ -94,7 +95,7 @@ export type Product = {
 };
 
 export const OFF_FIELDS = [
-  "product_name", "product_name_en", "brands", "image_front_url", "quantity", "serving_quantity",
+  "product_name", "product_name_en", "brands", "image_front_url", "image_ingredients_url", "quantity", "serving_quantity",
   "ingredients_text", "ingredients_text_en", "allergens_tags", "traces_tags", "additives_tags", "nutriments",
   "ingredients", "ingredients_analysis_tags",
 ].join(",");
@@ -147,6 +148,7 @@ export function normalize(code: string, p: any, taxonomy: AdditiveTaxonomy = {},
     name: p.product_name_en || p.product_name || "Unnamed product",
     brand: String(p.brands ?? "").split(",")[0].trim(),
     image: p.image_front_url || null,
+    ingredientsImage: p.image_ingredients_url || null,
     quantity,
     serving: serving > 0 ? serving : null,
     // ponytail: liquid guessed from pack size unit; OFF stores both under *_100g keys
@@ -390,6 +392,7 @@ if (typeof process !== "undefined" && process.argv[1]?.endsWith("product.ts")) {
   assert(shortNames(coke, zero).join("|") === "Coca-Cola|Coca-Cola Zero", shortNames(coke, zero).join("|"));
   const c = compareLines(nut, pr).map((l) => l.text);
   assert(c[0] === "Prince has 24.3 g less sugar" && c.includes("Only Prince lists fibre"), JSON.stringify(c));
+  assert(normalize("9", { image_ingredients_url: "https://x/ing.jpg" }).ingredientsImage === "https://x/ing.jpg", "ingredients photo");
   const noServing = { ...nut, serving: null };
   assert(glance(noServing)[2].text === "539 kcal in every 100 g", glance(noServing)[2].text);
   console.log("ok");
