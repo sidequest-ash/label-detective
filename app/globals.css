@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-ink: #0a0a0a;
+  --color-paper: #f4f4f2;
+  --color-mute: #8c8c8c;
+  --color-line: #232323;
+  --color-card: #141414;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-serif);
+}
+
+html {
+  background: var(--color-ink);
+  color: var(--color-paper);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  min-height: 100dvh;
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
