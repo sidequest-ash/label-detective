@@ -9,7 +9,7 @@ type BarcodeDetectorCtor = {
   getSupportedFormats(): Promise<string[]>;
 };
 
-export default function Scanner({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
+export default function Scanner({ onCode, onClose, onType }: { onCode: (code: string) => void; onClose: () => void; onType: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const cb = useRef(onCode);
   cb.current = onCode;
@@ -38,8 +38,8 @@ export default function Scanner({ onCode, onClose }: { onCode: (code: string) =>
   }, []);
 
   const typeInstead = () => {
-    returnTo.current = document.getElementById("code");
-    onClose();
+    returnTo.current = null; // the barcode field focuses itself when it appears
+    onType();
   };
 
   useEffect(() => {

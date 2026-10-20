@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Phone on the LAN + ngrok tunnels may load dev resources.
   allowedDevOrigins: ["192.168.1.131", "*.ngrok-free.app", "*.ngrok-free.dev", "*.ngrok.app"],
+  // The dev badge sits over the bottom tab bar; compile and runtime errors still show without it.
+  devIndicators: false,
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

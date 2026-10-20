@@ -3,18 +3,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, animate, motion, MotionConfig, useReducedMotion } from "motion/react";
 import {
-  ALLERGENS, allergenLabel, allergyHits, compare, explain, fmt, headline, LIMITS, limitLine, NUTRIENTS,
-  type Additive, type Ingredient, type Product,
+  ALLERGENS, allergenLabel, allergyHits, amount, compare, compareLines, fmt, glance, LIMITS, limitLine, NUTRIENTS,
+  nutrientNote, shortNames,
+  type Additive, type Ingredient, type Line, type Product,
 } from "@/lib/product";
 import type { Explanation } from "@/app/api/ingredient/route";
-import { BarcodeIcon, MoonIcon, PlusIcon, SunIcon, WarningIcon } from "@phosphor-icons/react";
+import {
+  ArrowLeftIcon, ArrowsLeftRightIcon, BarbellIcon, BarcodeIcon, CaretRightIcon, CheckIcon, ClockCounterClockwiseIcon,
+  CoffeeIcon, CubeIcon, DropIcon, ExportIcon, ForkKnifeIcon, GrainsIcon, LeafIcon, MoonIcon, PlusIcon, ScanIcon,
+  ShieldCheckIcon, SunIcon, WarningIcon, type Icon,
+} from "@phosphor-icons/react";
 import Scanner from "./Scanner";
 
-type View = { k: "home" } | { k: "product"; p: Product } | { k: "compare"; a: Product; b: Product };
+type Tab = "scan" | "compare" | "history" | "allergies";
+type View = { k: "tab"; tab: Tab } | { k: "product"; p: Product } | { k: "compare"; a: Product; b: Product };
 
-// Views live in the URL (?p=code, ?a=code&b=code) so refresh, Back and shared links work.
-const urlFor = (v: View) => (v.k === "product" ? `?p=${v.p.code}` : v.k === "compare" ? `?a=${v.a.code}&b=${v.b.code}` : location.pathname);
+// Views live in the URL (?p=code, ?a=code&b=code, ?tab=history) so refresh, Back and shared links work.
+const urlFor = (v: View) =>
+  v.k === "product" ? `?p=${v.p.code}` : v.k === "compare" ? `?a=${v.a.code}&b=${v.b.code}` : v.tab === "scan" ? location.pathname : `?tab=${v.tab}`;
 const reducedMotion = () => typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+const TABS: { tab: Tab; label: string; Icon: Icon }[] = [
+  { tab: "scan", label: "Scan", Icon: ScanIcon },
+  { tab: "compare", label: "Compare", Icon: ArrowsLeftRightIcon },
+  { tab: "history", label: "History", Icon: ClockCounterClockwiseIcon },
+  { tab: "allergies", label: "Allergies", Icon: ShieldCheckIcon },
+];
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 const SAMPLES = [
@@ -42,37 +55,39 @@ const save = (k: string, v: unknown) => {
 };
 
 export default function SnackIntel() {
-  const [view, setView] = useState<View>({ k: "home" });
-  const [first, setFirst] = useState<Product | null>(null); // picked as A, waiting for B
+  const [view, setView] = useState<View>({ k: "tab", tab: "scan" });
+  const [first, setFirst] = useState<Product | null>(null); // compare: first pick, waiting for the second
   const [scanning, setScanning] = useState(false);
+  const [typing, setTyping] = useState(false); // show the barcode-number field instead of the link
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<React.ReactNode>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [recent, setRecent] = useState<Product[]>([]);
   const [pairs, setPairs] = useState<[string, string][]>([]);
   const [allergies, setAllergies] = useState<string[]>([]);
   const request = useRef(0); // only the latest lookup may change the view
-
   const navigated = useRef(false); // focus the new view once it mounts, but not on first load
 
   const go = (v: View, how: "push" | "replace" = "push", url = urlFor(v)) => {
     navigated.current = true;
     setView(v);
-    history[how === "push" ? "pushState" : "replaceState"](null, "", url);
+    history[how === "push" ? "pushState" : "replaceState"]({ inApp: true }, "", url);
   };
 
   useEffect(() => {
     setRecent(load("ld:products", []));
     setPairs(load("ld:pairs", []));
     setAllergies(load("ld:allergies", []));
-    // The URL is the source of truth for the view and for a pending product A (?with=code).
+    // The URL is the source of truth for the view and for a pending first pick (?tab=compare&with=code).
     const fromUrl = async (e?: PopStateEvent) => {
       const q = new URLSearchParams(location.search);
       const id = ++request.current; // supersedes any lookup in flight
-      const [p, a, b, w] = [q.get("p"), q.get("a"), q.get("b"), q.get("with")];
+      const [p, a, b, w, t] = [q.get("p"), q.get("a"), q.get("b"), q.get("with"), q.get("tab")];
       if (e) navigated.current = true;
       setError(null);
       setBusy(Boolean(p || (a && b) || w));
-      let next: View = { k: "home" };
+      const tab: Tab = TABS.some((x) => x.tab === t) ? (t as Tab) : "scan";
+      let next: View = { k: "tab", tab };
       let pending: Product | null = null;
       if (p) {
         const found = await lookup(p, id);
@@ -96,6 +111,12 @@ export default function SnackIntel() {
     window.scrollTo({ top: 0, behavior: reducedMotion() ? "auto" : "smooth" });
   }, [view]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   const remember = (p: Product) =>
     setRecent((r) => {
       const next = [p, ...r.filter((x) => x.code !== p.code)].slice(0, 24);
@@ -116,6 +137,13 @@ export default function SnackIntel() {
       save("ld:pairs", next);
       return next;
     });
+
+  const clearHistory = () => {
+    setRecent([]);
+    setPairs([]);
+    save("ld:products", []);
+    save("ld:pairs", []);
+  };
 
   /** `id` is the request this lookup belongs to; a superseded request must not touch the error message. */
   async function lookup(code: string, id: number): Promise<Product | null> {
@@ -166,10 +194,14 @@ export default function SnackIntel() {
     setBusy(false);
     if (!p) return;
     remember(p);
+    const onCompareTab = view.k === "tab" && view.tab === "compare";
     if (first && first.code !== p.code) {
       go({ k: "compare", a: first, b: p });
       rememberPair(first.code, p.code);
       setFirst(null);
+    } else if (onCompareTab) {
+      setFirst(p); // first pick on the Compare tab
+      history.replaceState({ inApp: true }, "", `?tab=compare&with=${p.code}`);
     } else {
       setFirst(null);
       go({ k: "product", p });
@@ -190,121 +222,285 @@ export default function SnackIntel() {
   };
 
   const closeScanner = useCallback(() => setScanning(false), []);
-  const home = () => {
+  const goTab = (tab: Tab) => {
     request.current++; // drop any lookup still in flight
     setBusy(false);
-    setFirst(null);
-    go({ k: "home" });
+    setError(null);
+    if (tab !== "compare") setFirst(null);
+    setTyping(false);
+    go({ k: "tab", tab }, "push", tab === "compare" && first ? `?tab=compare&with=${first.code}` : undefined);
   };
   const startCompare = (p: Product) => {
     setFirst(p);
-    go({ k: "home" }, "push", `?with=${p.code}`);
+    setError(null);
+    go({ k: "tab", tab: "compare" }, "push", `?tab=compare&with=${p.code}`);
   };
   const cancelCompare = () => {
-    request.current++; // a product B still loading must not open the cancelled comparison
+    request.current++; // a second product still loading must not open the cancelled comparison
     setBusy(false);
     setFirst(null);
-    history.replaceState(null, "", location.pathname);
+    history.replaceState({ inApp: true }, "", "?tab=compare");
   };
+  const back = () => (history.state?.inApp ? history.back() : goTab("scan"));
+  const share = async (title: string) => {
+    try {
+      if (navigator.share) await navigator.share({ title, url: location.href });
+      else {
+        await navigator.clipboard.writeText(location.href);
+        setToast("Link copied");
+      }
+    } catch {}
+  };
+
+  const activeTab: Tab = view.k === "tab" ? view.tab : view.k === "compare" ? "compare" : "scan";
+  const title = view.k === "product" ? view.p.name : view.k === "compare" ? `${view.a.name} vs ${view.b.name}` : "";
 
   return (
     <MotionConfig reducedMotion="user">
-    <div className="mx-auto min-h-dvh max-w-5xl px-4 pb-24 sm:px-8">
-      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-canvas">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-canvas"
+      >
         Skip to content
       </a>
-      <div inert={scanning}>
-      <header className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-canvas/80 px-4 py-4 backdrop-blur-xl sm:-mx-8 sm:px-8">
-        <button onClick={home} className="font-mono text-[11px] uppercase tracking-[0.25em]">
-          Snack Intel
-        </button>
-        <ThemeToggle />
-      </header>
-
-      <AnimatePresence mode="wait">
-        <motion.main
-          ref={(el: HTMLElement | null) => {
-            if (el && navigated.current) {
-              navigated.current = false;
-              el.focus({ preventScroll: true });
-            }
-          }}
-          id="main"
-          tabIndex={-1}
-          className="outline-none"
-          key={view.k === "home" ? "home" : view.k === "product" ? view.p.code : `${view.a.code}-${view.b.code}`}
-          initial={{ opacity: 0, y: 24, filter: "blur(8px)" }}
-          animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-          exit={{ opacity: 0, y: -16, filter: "blur(6px)" }}
-          transition={{ duration: 0.55, ease: EASE }}
-        >
-          {view.k === "home" && (
-            <Home
-              first={first}
-              busy={busy}
-              error={error}
-              recent={recent}
-              pairs={pairs}
-              onSubmit={open}
-              onScan={() => setScanning(true)}
-              onCancelCompare={cancelCompare}
-              onPair={openPair}
-              allergies={allergies}
-              onToggleAllergy={toggleAllergy}
-            />
+      <div inert={scanning} className="mx-auto min-h-dvh max-w-xl px-5 pb-32">
+        <header className="sticky top-0 z-20 -mx-5 flex h-14 items-center justify-between bg-canvas/85 px-5 backdrop-blur-xl">
+          {view.k === "tab" ? (
+            <span className="text-[17px] font-semibold tracking-tight">Snack Intel</span>
+          ) : (
+            <button onClick={back} aria-label="Back" className="-ml-2 grid h-10 w-10 place-items-center rounded-full active:scale-95">
+              <ArrowLeftIcon size={22} aria-hidden />
+            </button>
           )}
-          {view.k === "product" && <ProductView p={view.p} allergies={allergies} onCompare={() => startCompare(view.p)} onBack={home} />}
-          {view.k === "compare" && (
-            <CompareView a={view.a} b={view.b} allergies={allergies} onSwap={() => go({ k: "compare", a: view.b, b: view.a }, "replace")} onBack={home} />
-          )}
-        </motion.main>
-      </AnimatePresence>
+          <div className="flex items-center gap-1">
+            {view.k !== "tab" && (
+              <button onClick={() => share(title)} aria-label="Share" className="grid h-10 w-10 place-items-center rounded-full active:scale-95">
+                <ExportIcon size={22} aria-hidden />
+              </button>
+            )}
+            <ThemeToggle />
+          </div>
+        </header>
 
-      <Footer />
+        <AnimatePresence mode="wait">
+          <motion.main
+            ref={(el: HTMLElement | null) => {
+              if (el && navigated.current) {
+                navigated.current = false;
+                el.focus({ preventScroll: true });
+              }
+            }}
+            id="main"
+            tabIndex={-1}
+            className="outline-none"
+            key={view.k === "tab" ? view.tab : view.k === "product" ? view.p.code : `${view.a.code}-${view.b.code}`}
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.35, ease: EASE }}
+          >
+            {view.k === "tab" && view.tab === "scan" && (
+              <ScanTab
+                busy={busy}
+                error={error}
+                typing={typing}
+                onType={() => setTyping(true)}
+                recent={recent}
+                allergies={allergies}
+                onScan={() => setScanning(true)}
+                onSubmit={open}
+                goTab={goTab}
+              />
+            )}
+            {view.k === "tab" && view.tab === "compare" && (
+              <CompareTab
+                first={first}
+                busy={busy}
+                error={error}
+                typing={typing}
+                onType={() => setTyping(true)}
+                recent={recent}
+                pairs={pairs}
+                onScan={() => setScanning(true)}
+                onPick={open}
+                onCancel={cancelCompare}
+                onPair={openPair}
+              />
+            )}
+            {view.k === "tab" && view.tab === "history" && (
+              <HistoryTab recent={recent} pairs={pairs} busy={busy} onOpen={open} onPair={openPair} onClear={clearHistory} goTab={goTab} />
+            )}
+            {view.k === "tab" && view.tab === "allergies" && <AllergiesTab allergies={allergies} onToggle={toggleAllergy} />}
+            {view.k === "product" && <ProductView p={view.p} allergies={allergies} onCompare={() => startCompare(view.p)} />}
+            {view.k === "compare" && (
+              <CompareView
+                a={view.a}
+                b={view.b}
+                allergies={allergies}
+                onSwap={() => go({ k: "compare", a: view.b, b: view.a }, "replace")}
+                onNew={() => goTab("compare")}
+              />
+            )}
+          </motion.main>
+        </AnimatePresence>
+
+        <Footer />
       </div>
 
-      <AnimatePresence>{scanning && <Scanner onCode={open} onClose={closeScanner} />}</AnimatePresence>
-    </div>
+      <nav aria-label="Main" inert={scanning} className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl">
+        <div className="mx-auto grid max-w-xl grid-cols-4">
+          {TABS.map(({ tab, label, Icon }) => {
+            const on = activeTab === tab;
+            return (
+              <button
+                key={tab}
+                onClick={() => goTab(tab)}
+                aria-current={on ? "page" : undefined}
+                className={`flex flex-col items-center gap-1 pb-2 pt-2.5 text-[11px] transition active:scale-95 ${on ? "font-semibold text-ink" : "text-mute"}`}
+              >
+                <Icon size={24} weight={on ? "fill" : "regular"} className={on ? "text-accent" : ""} aria-hidden />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <div role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 top-16 z-40 flex justify-center">
+        <AnimatePresence>
+          {(busy || toast) && (
+            <motion.span
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-canvas shadow-lg"
+            >
+              {busy ? (
+                <>
+                  <Dots label="" /> Looking it up
+                </>
+              ) : (
+                toast
+              )}
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>{scanning && <Scanner onCode={open} onClose={closeScanner} onType={() => (setScanning(false), setTyping(true))} />}</AnimatePresence>
     </MotionConfig>
   );
 }
 
-/* ───────────────────────── Home ───────────────────────── */
+/* ───────────────────────── Tabs ───────────────────────── */
 
-function Home(props: {
+function ScanTab(props: {
+  busy: boolean;
+  error: React.ReactNode;
+  typing: boolean;
+  onType: () => void;
+  recent: Product[];
+  allergies: string[];
+  onScan: () => void;
+  onSubmit: (code: string) => void;
+  goTab: (t: Tab) => void;
+}) {
+  const { busy, recent, allergies } = props;
+  return (
+    <section className="pt-4">
+      <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">What are you eating today?</h1>
+      <p className="mt-2 text-[15px] text-mute">Scan the barcode on any packaged food.</p>
+
+      <ScanCard title="Scan a barcode" sub="Point your camera at the pack" onClick={props.onScan} disabled={busy} />
+      <TypeInstead typing={props.typing} onType={props.onType} busy={busy} onSubmit={props.onSubmit} />
+      <ErrorText error={props.error} />
+
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-sm text-mute">No pack handy? Try</span>
+        {SAMPLES.map((s) => (
+          <button
+            key={s.code}
+            onClick={() => props.onSubmit(s.code)}
+            disabled={busy}
+            className="rounded-full bg-card px-3.5 py-1.5 text-sm transition active:scale-95 disabled:opacity-40"
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      <button
+        onClick={() => props.goTab("allergies")}
+        className="mt-6 flex w-full items-center gap-3 rounded-[22px] bg-card px-4 py-4 text-left transition active:scale-[0.99]"
+      >
+        <ShieldCheckIcon size={24} weight="fill" className="shrink-0 text-accent" aria-hidden />
+        <span className="flex-1">
+          <span className="block text-[15px]">
+            {allergies.length ? (
+              <>
+                Watching for <b className="font-semibold">{allergies.map(allergenLabel).join(", ")}</b>
+              </>
+            ) : (
+              "Add your allergies"
+            )}
+          </span>
+          <span className="text-[13px] text-mute">{allergies.length ? "Flagged on every product" : "We'll flag them on every product"}</span>
+        </span>
+        <CaretRightIcon size={18} className="text-mute" aria-hidden />
+      </button>
+
+      {recent.length > 0 && (
+        <>
+          <div className="mb-3 mt-8 flex items-baseline justify-between">
+            <h2 className="text-[19px] font-semibold">Recently scanned</h2>
+            <button onClick={() => props.goTab("history")} className="text-sm text-mute">
+              See all
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {recent.slice(0, 4).map((p) => (
+              <ProductCard key={p.code} p={p} onClick={() => props.onSubmit(p.code)} disabled={busy} />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function CompareTab(props: {
   first: Product | null;
   busy: boolean;
   error: React.ReactNode;
+  typing: boolean;
+  onType: () => void;
   recent: Product[];
   pairs: [string, string][];
-  onSubmit: (code: string) => void;
   onScan: () => void;
-  onCancelCompare: () => void;
+  onPick: (code: string) => void;
+  onCancel: () => void;
   onPair: (a: string, b: string) => void;
-  allergies: string[];
-  onToggleAllergy: (tag: string) => void;
 }) {
-  const { first, busy, error, recent, pairs } = props;
-  const [code, setCode] = useState("");
+  const { first, busy, recent, pairs } = props;
+  const choices = recent.filter((p) => p.code !== first?.code);
   const name = (c: string) => recent.find((p) => p.code === c)?.name ?? c;
-
   return (
-    <section className="pt-10 sm:pt-20">
+    <section className="pt-4">
+      <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">Compare</h1>
+      <p className="mt-2 text-[15px] text-mute">
+        {first ? "Now pick the second product." : "Pick two products to see them side by side."}
+      </p>
+
       <AnimatePresence>
         {first && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="mb-8 flex items-center gap-4 rounded-2xl border border-line bg-card p-3">
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+            <div className="mt-5 flex items-center gap-3 rounded-[22px] bg-card p-3">
               <Thumb p={first} size="h-14 w-14" />
               <div className="min-w-0 flex-1">
-                <p className="text-xs text-mute">Comparing with</p>
-                <p className="truncate">{first.name}</p>
+                <p className="text-[13px] text-mute">First pick</p>
+                <p className="truncate font-medium">{first.name}</p>
               </div>
-              <button onClick={props.onCancelCompare} className="px-3 text-sm text-mute hover:text-ink">
+              <button onClick={props.onCancel} className="px-3 text-sm text-mute">
                 Cancel
               </button>
             </div>
@@ -312,437 +508,501 @@ function Home(props: {
         )}
       </AnimatePresence>
 
-      <h1 className="max-w-[9ch] text-[clamp(3rem,13vw,7rem)] font-semibold leading-[0.92] tracking-[-0.05em]">
-        {first ? (
-          <>
-            Now the <span className="font-light text-mute">other one.</span>
-          </>
-        ) : (
-          <>
-            Read the <span className="font-light text-mute">label.</span>
-          </>
-        )}
-      </h1>
-      <p className="mt-6 max-w-md text-lg leading-snug text-mute">
-        {first
-          ? "Scan or type a second barcode to put the two side by side, using the units on each label."
-          : "Scan a barcode. See what's inside, in plain words. Compare two products on equal terms."}
-      </p>
+      <ScanCard
+        title={first ? "Scan the second product" : "Scan a product"}
+        sub="Or pick one you've scanned below"
+        onClick={props.onScan}
+        disabled={busy}
+      />
+      <TypeInstead typing={props.typing} onType={props.onType} busy={busy} onSubmit={props.onPick} />
+      <ErrorText error={props.error} />
 
-      <div className="mt-10 grid gap-3 sm:grid-cols-[1fr_auto]">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            props.onSubmit(code);
-          }}
-          className="flex items-center rounded-full border border-line bg-card pl-5 focus-within:border-ink/50"
-        >
-          <label htmlFor="code" className="sr-only">
-            Barcode number
-          </label>
-          <input
-            id="code"
-            inputMode="numeric"
-            autoComplete="off"
-            placeholder="Barcode number"
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/[^\d ]/g, ""))}
-            className="tabular h-14 min-w-0 flex-1 bg-transparent font-mono text-lg tracking-wider outline-none placeholder:font-sans placeholder:tracking-normal placeholder:text-mute"
-          />
-          <button
-            disabled={busy || !code.trim()}
-            className="m-1.5 h-11 rounded-full bg-ink px-5 font-medium text-canvas transition disabled:opacity-30"
-          >
-            {busy ? <Dots /> : "Look up"}
-          </button>
-        </form>
-        <motion.button
-          whileTap={{ scale: 0.96 }}
-          onClick={props.onScan}
-          className="flex h-14 items-center justify-center gap-3 rounded-full border border-ink px-7 font-medium"
-        >
-          <BarcodeIcon size={22} weight="bold" aria-hidden /> Scan barcode
-        </motion.button>
-      </div>
-
-      <AnimatePresence>
-        {error && (
-          <motion.p
-            role="alert"
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="mt-4 text-sm text-ink/80"
-          >
-            {error}
-          </motion.p>
-        )}
-      </AnimatePresence>
-
-      <div className="mt-8 flex flex-wrap items-center gap-2">
-        <span className="mr-1 text-sm text-mute">Try a sample</span>
-        {SAMPLES.map((s) => (
-          <button
-            key={s.code}
-            onClick={() => props.onSubmit(s.code)}
-            disabled={busy}
-            className="rounded-full border border-line px-3.5 py-1.5 text-sm text-mute transition hover:border-ink/40 hover:text-ink disabled:opacity-40"
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-16">
-        <div className="flex items-baseline justify-between">
-          <Eyebrow>Your allergies</Eyebrow>
-          <span className="text-xs text-mute">Saved on this device only</span>
+      <h2 className="mb-3 mt-8 text-[19px] font-semibold">{first ? "Pick the second one" : "Pick from your history"}</h2>
+      {choices.length ? (
+        <div className="grid grid-cols-2 gap-3">
+          {choices.map((p) => (
+            <ProductCard key={p.code} p={p} onClick={() => props.onPick(p.code)} disabled={busy} />
+          ))}
         </div>
-        <p className="mt-2 text-sm text-mute">
-          Products that contain, or may contain, one of these get a warning. Warnings only cover what the product&apos;s record
-          lists, so no warning doesn&apos;t mean it&apos;s safe for you. Always read the pack.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {ALLERGENS.map(({ tag, label }) => {
-            const on = props.allergies.includes(tag);
-            return (
-              <motion.button
-                key={tag}
-                whileTap={{ scale: 0.94 }}
-                aria-pressed={on}
-                onClick={() => props.onToggleAllergy(tag)}
-                className={`rounded-full border px-3.5 py-1.5 text-sm transition ${on ? "border-ink bg-ink text-canvas" : "border-line text-mute hover:text-ink"}`}
-              >
-                {label}
-              </motion.button>
-            );
-          })}
-        </div>
-      </div>
+      ) : (
+        <p className="rounded-[22px] bg-card px-4 py-5 text-[15px] text-mute">Products you scan will show up here.</p>
+      )}
 
-      {recent.length > 0 && (
-        <div className="mt-20">
-          <Eyebrow>Recently looked up</Eyebrow>
-          <div className="-mx-4 mt-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 sm:-mx-8 sm:px-8">
-            {recent.map((p, i) => (
-              <motion.button
-                key={p.code}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.04, ease: EASE, duration: 0.5 }}
-                whileHover={{ y: -4 }}
-                onClick={() => props.onSubmit(p.code)}
-                disabled={busy}
-                className="w-36 shrink-0 snap-start text-left disabled:opacity-40"
-              >
-                <Thumb p={p} size="aspect-square w-full" />
-                <p className="mt-2 truncate text-sm">{p.name}</p>
-                <p className="truncate text-xs text-mute">{p.brand || p.quantity || p.code}</p>
-              </motion.button>
+      {pairs.length > 0 && <PairList pairs={pairs} name={name} busy={busy} onPair={props.onPair} />}
+    </section>
+  );
+}
+
+function HistoryTab(props: {
+  recent: Product[];
+  pairs: [string, string][];
+  busy: boolean;
+  onOpen: (code: string) => void;
+  onPair: (a: string, b: string) => void;
+  onClear: () => void;
+  goTab: (t: Tab) => void;
+}) {
+  const { recent, pairs, busy } = props;
+  const [confirm, setConfirm] = useState(false);
+  const name = (c: string) => recent.find((p) => p.code === c)?.name ?? c;
+  return (
+    <section className="pt-4">
+      <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">History</h1>
+      <p className="mt-2 text-[15px] text-mute">Saved on this device only.</p>
+      {!recent.length ? (
+        <div className="mt-6 rounded-[24px] bg-card px-5 py-8 text-center">
+          <p className="text-[17px] font-medium">Nothing scanned yet</p>
+          <p className="mt-1 text-[15px] text-mute">Products you look up will appear here.</p>
+          <button onClick={() => props.goTab("scan")} className="mt-5 h-12 rounded-full bg-ink px-6 font-medium text-canvas active:scale-95">
+            Scan a barcode
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            {recent.map((p) => (
+              <ProductCard key={p.code} p={p} onClick={() => props.onOpen(p.code)} disabled={busy} />
             ))}
           </div>
-        </div>
+          {pairs.length > 0 && <PairList pairs={pairs} name={name} busy={busy} onPair={props.onPair} />}
+          <button
+            onClick={() => (confirm ? (props.onClear(), setConfirm(false)) : setConfirm(true))}
+            className="mx-auto mt-10 block rounded-full border border-line px-5 py-2.5 text-sm text-mute active:scale-95"
+          >
+            {confirm ? "Tap again to clear everything" : "Clear history"}
+          </button>
+        </>
       )}
+    </section>
+  );
+}
 
-      {pairs.length > 0 && (
-        <div className="mt-14">
-          <Eyebrow>Recent comparisons</Eyebrow>
-          <ul className="mt-4 grid gap-2">
-            {pairs.map(([a, b]) => (
-              <li key={a + b}>
-                <button onClick={() => props.onPair(a, b)} disabled={busy} className="flex w-full items-center gap-3 rounded-2xl bg-card px-4 py-4 text-left transition active:scale-[0.99] disabled:opacity-40">
-                  <span className="min-w-0 flex-1 truncate">{name(a)}</span>
-                  <span className="text-sm text-mute">vs</span>
-                  <span className="min-w-0 flex-1 truncate text-right">{name(b)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+function AllergiesTab({ allergies, onToggle }: { allergies: string[]; onToggle: (tag: string) => void }) {
+  return (
+    <section className="pt-4">
+      <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">Your allergies</h1>
+      <p className="mt-2 text-[15px] leading-relaxed text-mute">
+        Tap the ones that matter to you. Products that contain, or may contain, them get a warning.
+      </p>
+      <div className="mt-6 grid grid-cols-2 gap-2.5">
+        {ALLERGENS.map(({ tag, label }) => {
+          const on = allergies.includes(tag);
+          return (
+            <motion.button
+              key={tag}
+              whileTap={{ scale: 0.97 }}
+              aria-pressed={on}
+              onClick={() => onToggle(tag)}
+              className={`flex items-center justify-between rounded-[18px] px-4 py-3.5 text-left text-[15px] transition ${on ? "bg-ink font-medium text-canvas" : "bg-card"}`}
+            >
+              {label}
+              <span className={`grid h-6 w-6 place-items-center rounded-full ${on ? "bg-accent text-white" : "border border-line"}`}>
+                {on && <CheckIcon size={14} weight="bold" aria-hidden />}
+              </span>
+            </motion.button>
+          );
+        })}
+      </div>
+      <p className="mt-5 rounded-[18px] bg-card px-4 py-4 text-[13px] leading-relaxed text-mute">
+        Saved on this device only. Warnings only cover what the product&apos;s record lists, so no warning doesn&apos;t mean
+        a product is safe for you. Always read the pack.
+      </p>
     </section>
   );
 }
 
 /* ───────────────────────── Product ───────────────────────── */
 
-function ProductView({ p, allergies, onCompare, onBack }: { p: Product; allergies: string[]; onCompare: () => void; onBack: () => void }) {
-  const line = headline(p);
+const PRODUCT_TABS = ["Nutrition", "Ingredients", "Additives"] as const;
+
+function ProductView({ p, allergies, onCompare }: { p: Product; allergies: string[]; onCompare: () => void }) {
+  const [tab, setTab] = useState<(typeof PRODUCT_TABS)[number]>("Nutrition");
+  const lines = glance(p);
+  return (
+    <article className="pt-2">
+      <motion.div
+        initial={{ scale: 0.96, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.6, ease: EASE }}
+      >
+        <Thumb p={p} size="h-60 w-full" big />
+      </motion.div>
+      <h1 className="mt-5 text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">{p.name}</h1>
+      <p className="mt-1 text-[15px] text-mute">{[p.brand, p.quantity].filter(Boolean).join(", ") || `Barcode ${p.code}`}</p>
+
+      <AllergyWarning p={p} allergies={allergies} className="mt-4" />
+      {lines.length > 0 && <LineCard title="At a glance" lines={lines} />}
+
+      <div role="tablist" aria-label="Product details" className="mt-6 grid grid-cols-3 rounded-2xl bg-line/70 p-1 text-sm">
+        {PRODUCT_TABS.map((t) => (
+          <button
+            key={t}
+            role="tab"
+            id={`tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`panel-${t}`}
+            onClick={() => setTab(t)}
+            className={`rounded-xl py-2.5 transition ${tab === t ? "bg-card font-semibold text-ink shadow-sm" : "text-mute"}`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+        {tab === "Nutrition" && <NutritionPanel p={p} />}
+        {tab === "Ingredients" && <IngredientsPanel p={p} allergies={allergies} />}
+        {tab === "Additives" && <Additives items={p.additives} />}
+      </div>
+
+      <motion.button whileTap={{ scale: 0.98 }} onClick={onCompare} className="mt-6 h-14 w-full rounded-full bg-ink text-base font-semibold text-canvas">
+        Compare with another
+      </motion.button>
+    </article>
+  );
+}
+
+function NutritionPanel({ p }: { p: Product }) {
+  const [serving, setServing] = useState(false);
+  const factor = serving && p.serving ? p.serving / 100 : 1;
+  const ml = p.basis === "100ml";
   const rows = NUTRIENTS.filter((m) => !m.optional || p.n[m.key] !== undefined);
   const listed = rows.filter((m) => p.n[m.key] !== undefined).length;
   const limitNotes = rows.filter((m) => LIMITS[m.key] && p.n[m.key] !== undefined).map((m) => LIMITS[m.key]!.note);
-
   return (
-    <article className="pt-6">
-      <AllergyWarning p={p} allergies={allergies} />
-
-      <div className="mt-6 grid gap-8 sm:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] sm:items-end">
-        <motion.div
-          initial={{ scale: 0.92, rotate: -2, opacity: 0 }}
-          animate={{ scale: 1, rotate: 0, opacity: 1 }}
-          transition={{ duration: 0.8, ease: EASE }}
-          className="order-2 sm:order-none"
-        >
-          <Thumb p={p} size="mx-auto aspect-[4/3] max-h-[38vh] w-full sm:aspect-[4/5] sm:max-h-none" big />
-        </motion.div>
-        <div className="order-1 sm:order-none">
-          <p className="text-sm text-mute">{[p.brand, p.quantity].filter(Boolean).join(", ") || "Product"}</p>
-          <h1 className="mt-3 text-[clamp(2.6rem,9vw,5.5rem)] font-semibold leading-[0.92] tracking-[-0.045em]">{p.name}</h1>
-          <p className="tabular mt-4 font-mono text-xs tracking-[0.2em] text-mute">{p.code}</p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              onClick={onCompare}
-              className="h-12 rounded-full bg-ink px-6 font-medium text-canvas"
+    <div>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {p.serving ? (
+          [false, true].map((s) => (
+            <button
+              key={String(s)}
+              aria-pressed={serving === s}
+              onClick={() => setServing(s)}
+              className={`rounded-full px-3.5 py-1.5 text-[13px] transition ${serving === s ? "bg-ink text-canvas" : "border border-line text-mute"}`}
             >
-              Compare with another
-            </motion.button>
-            <button onClick={onBack} className="h-12 rounded-full border border-line px-6 text-mute hover:text-ink">
-              New lookup
+              {s ? `In a ${amount(p.serving!, ml)} serving` : `In ${basisLabel(p)}`}
             </button>
-          </div>
-        </div>
-      </div>
-
-      {line && (
-        <motion.p
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.25, duration: 0.7, ease: EASE }}
-          className="mt-20 max-w-3xl text-[clamp(2rem,6.5vw,3.6rem)] font-medium leading-[1.05] tracking-[-0.035em]"
-        >
-          {line}
-        </motion.p>
-      )}
-
-      <section className="mt-14">
-        <div className="flex items-baseline justify-between border-b border-line pb-3">
-          <Eyebrow>Nutrition per {p.basis === "100ml" ? "100 ml" : "100 g"}</Eyebrow>
-          <span className="text-sm text-mute">
-            {listed} of {rows.length} listed
-          </span>
-        </div>
-        {listed === 0 && (
-          <p className="py-8 text-mute">This product&apos;s record has no nutrition values yet. The pack itself will have them.</p>
+          ))
+        ) : (
+          <span className="text-[13px] text-mute">In every {basisLabel(p)}</span>
         )}
-        <ul>
-          {rows.map((m, i) => {
-            const v = p.n[m.key];
-            const limit = LIMITS[m.key];
-            const scale = m.ri ?? limit?.max; // bar = share of the reference intake, else of the limit
-            const mark = limit && scale && limit.max <= scale ? { at: (limit.max / scale) * 100, label: `${limit.by} daily limit` } : undefined;
-            const pct = v !== undefined && scale ? Math.min(100, (v / scale) * 100) : 0;
-            const limitText = limitLine(p, m.key);
-            return (
-              <li key={m.key} className="py-4">
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className={m.sub ? "pl-5 text-mute" : "text-lg"}>
-                    {m.label}
-                  </span>
-                  <span className="tabular text-2xl font-medium tracking-tight sm:text-3xl">
-                    {v === undefined ? (
-                      <span className="text-base text-mute">Not listed</span>
-                    ) : (
-                      <>
-                        <Num v={v} />
-                        <span className="ml-1 text-base text-mute">{m.unit}</span>
-                      </>
-                    )}
-                  </span>
-                </div>
-                {scale && v !== undefined && <Bar pct={pct} delay={0.1 + i * 0.05} limit={mark} />}
-                <p className="mt-2 text-sm text-mute">{explain(p, m.key)}</p>
-                {limitText && (
-                  <p className="mt-1.5 flex gap-2 text-sm text-ink/85">
-                    <span className="mt-[3px] shrink-0 self-start rounded-sm border border-ink/40 px-1 font-mono text-[9px] leading-[14px] tracking-wider">
-                      {limit!.by}
-                    </span>
-                    {limitText}
-                  </p>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-        <p className="mt-4 text-xs leading-relaxed text-mute">
-          Reference intakes are the EU guideline amounts for an average adult (2,000 kcal a day). They are a yardstick for
-          scale, not a target or a limit.{limitNotes.length > 0 && " The marked tick under a bar is the daily limit."} {limitNotes.join(" ")}
+        <span className="ml-auto text-[13px] text-mute">
+          {listed} of {rows.length} listed
+        </span>
+      </div>
+      {listed === 0 && (
+        <p className="mt-3 rounded-[24px] bg-card px-5 py-5 text-[15px] text-mute">
+          This product&apos;s record has no nutrition values yet. The pack itself will have them.
         </p>
-      </section>
+      )}
+      <ul className="mt-3 rounded-[24px] bg-card px-5">
+        {rows.map((m, i) => {
+          const base = p.n[m.key];
+          const v = base === undefined ? undefined : base * factor;
+          const limit = LIMITS[m.key];
+          const scale = m.ri ?? limit?.max; // bar = share of the reference intake, else of the limit
+          const pct = v !== undefined && scale ? Math.min(100, (v / scale) * 100) : 0;
+          const mark = limit && scale && limit.max <= scale ? { at: (limit.max / scale) * 100, label: `${limit.by} daily limit` } : undefined;
+          const detail = limitLine(p, m.key);
+          return (
+            <li key={m.key} className={`py-3.5 ${i ? "border-t border-line" : ""}`}>
+              <div className="flex items-baseline justify-between gap-4">
+                <span className={m.sub ? "pl-4 text-mute" : "text-[16px]"}>{m.label}</span>
+                <span className="tabular text-[17px] font-semibold">
+                  {v === undefined ? (
+                    <span className="text-sm font-normal text-mute">Not listed</span>
+                  ) : (
+                    <>
+                      <Num v={v} key={`${m.key}-${serving}`} />
+                      <span className="ml-0.5 text-sm font-normal text-mute">{m.unit}</span>
+                    </>
+                  )}
+                </span>
+              </div>
+              {scale && v !== undefined && <Bar pct={pct} delay={0.05 + i * 0.04} limit={mark} />}
+              {v !== undefined && nutrientNote(m.key, v) && <p className="mt-1.5 text-[13px] text-mute">{nutrientNote(m.key, v)}</p>}
+              {detail && <p className="mt-0.5 text-[13px] text-mute">{detail}</p>}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-xs leading-relaxed text-mute">
+        &ldquo;A typical adult&apos;s day&rdquo; uses EU reference intakes for an average adult (2,000 kcal). They are a
+        yardstick, not a target or a limit.{limitNotes.length > 0 && " The marked tick on a bar is the daily limit."}{" "}
+        {limitNotes.join(" ")}
+      </p>
+    </div>
+  );
+}
 
-      <section className="mt-16 grid gap-12 sm:grid-cols-2">
-        <div>
-          <Eyebrow>Allergens declared</Eyebrow>
-          <Chips items={p.allergens} mine={allergies} empty="None declared in the record." />
-          {p.traces.length > 0 && (
-            <>
-              <p className="mt-6 text-sm text-mute">May contain traces of</p>
-              <Chips items={p.traces} mine={allergies} />
-            </>
-          )}
-          <AllergenNote />
-        </div>
-        <div>
-          <Eyebrow>Ingredients, as printed</Eyebrow>
-          <p className="mt-4 leading-relaxed text-ink/85">
-            {p.ingredients || <span className="text-mute">No ingredient list in the record yet.</span>}
-          </p>
-          {p.ingredients && <p className="mt-3 text-xs text-mute">Listed in descending order by weight, as printed on the pack.</p>}
-        </div>
-      </section>
-
+function IngredientsPanel({ p, allergies }: { p: Product; allergies: string[] }) {
+  return (
+    <div>
+      <div className="mt-4 rounded-[24px] bg-card px-5 py-4">
+        <h2 className="text-[17px] font-semibold">Allergens declared</h2>
+        <Chips items={p.allergens} mine={allergies} empty="None declared in the record." />
+        {p.traces.length > 0 && (
+          <>
+            <p className="mt-4 text-sm text-mute">May contain traces of</p>
+            <Chips items={p.traces} mine={allergies} />
+          </>
+        )}
+        <AllergenNote />
+      </div>
       <IngredientList p={p} />
-
-      <Additives items={p.additives} />
-
-    </article>
+      <div className="mt-4 rounded-[24px] bg-card px-5 py-4">
+        <h2 className="text-[17px] font-semibold">As printed on the pack</h2>
+        <p className="mt-2 text-[15px] leading-relaxed text-ink/85">
+          {p.ingredients || <span className="text-mute">No ingredient list in the record yet.</span>}
+        </p>
+        {p.ingredients && <p className="mt-2 text-xs text-mute">Listed in descending order by weight.</p>}
+      </div>
+    </div>
   );
 }
 
 /* ───────────────────────── Compare ───────────────────────── */
 
-function CompareView({ a, b, allergies, onSwap, onBack }: { a: Product; b: Product; allergies: string[]; onSwap: () => void; onBack: () => void }) {
+function CompareView(props: { a: Product; b: Product; allergies: string[]; onSwap: () => void; onNew: () => void }) {
+  const { a, b, allergies } = props;
+  const [na, nb] = shortNames(a, b);
   const diffs = compare(a, b);
-  const top = diffs.reduce((x, y) => (y.weight > x.weight ? y : x));
-  const topMeta = NUTRIENTS.find((m) => m.key === top.key)!;
-
+  const mixed = a.basis !== b.basis;
+  const lines = compareLines(a, b);
   return (
-    <article className="pt-6">
-      <h1 className="sr-only">
-        {a.name} compared with {b.name}
-      </h1>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-3 sm:gap-8">
-        {[a, b].map((p, i) => (
-          <motion.div
-            key={p.code}
-            initial={{ opacity: 0, x: i ? 40 : -40 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.7, ease: EASE }}
-            className={i ? "order-3" : ""}
-          >
-            <Thumb p={p} size="aspect-square w-full" big />
-            <p className="mt-3 flex items-center gap-2 text-sm text-mute">
-              <Tag>{i ? "B" : "A"}</Tag>
-              <span className="truncate">{p.brand || p.code}</span>
-            </p>
-            <p className="mt-1 text-lg font-medium leading-tight tracking-tight sm:text-2xl">{p.name}</p>
-          </motion.div>
-        ))}
+    <article className="pt-4">
+      <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.02em]">Side by side</h1>
+      <p className="mt-2 text-[15px] text-mute">
+        {mixed ? `${na} per ${basisLabel(a)}, ${nb} per ${basisLabel(b)}, so this is approximate` : `Compared in every ${basisLabel(a)}`}
+      </p>
+
+      <div className="mt-5 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5">
+        <ProductCard p={a} />
         <motion.button
-          onClick={onSwap}
-          aria-label="Swap A and B"
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
+          onClick={props.onSwap}
+          aria-label="Swap the two products"
           whileTap={{ rotate: 180 }}
-          transition={{ type: "spring", stiffness: 300, damping: 20, delay: 0.3 }}
-          className="order-2 mt-[22%] rounded-full border border-line px-3 py-1.5 text-sm text-mute transition hover:text-ink"
+          className="grid h-10 w-10 place-items-center rounded-full bg-card text-sm text-mute"
         >
           vs
         </motion.button>
+        <ProductCard p={b} />
       </div>
 
-      <AllergyWarning p={a} allergies={allergies} label="A" className="mt-10" />
-      <AllergyWarning p={b} allergies={allergies} label="B" />
+      <AllergyWarning p={a} allergies={allergies} label={na} className="mt-4" />
+      <AllergyWarning p={b} allergies={allergies} label={nb} className="mt-3" />
 
-      {a.basis !== b.basis && (
-        <p className="mt-8 rounded-2xl bg-card p-4 text-sm text-mute">
-          One is measured per 100 g and the other per 100 ml, so treat this as an approximate comparison.
-        </p>
-      )}
+      {lines.length > 0 && <LineCard title="The big differences" lines={lines} />}
 
-      {top.weight > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35, duration: 0.7, ease: EASE }}
-          className="mt-16"
-        >
-          <Eyebrow>Biggest difference</Eyebrow>
-          <p className="mt-3 text-[clamp(2rem,7vw,4rem)] font-medium leading-[1.05] tracking-[-0.035em]">
-            <span className="text-mute">{topMeta.label}.</span> {top.text.replace(/^(A|B)/, (w) => (w === "A" ? a.name : b.name))}.
-          </p>
-        </motion.div>
-      )}
+      <ul className="mt-4 rounded-[24px] bg-card px-5">
+        {diffs.map((d, i) => {
+          const m = NUTRIENTS.find((x) => x.key === d.key)!;
+          const max = Math.max(d.a ?? 0, d.b ?? 0) || 1;
+          return (
+            <li key={d.key} className={`py-3.5 ${i ? "border-t border-line" : ""}`}>
+              <p className="text-[15px] font-semibold">{m.label}</p>
+              {[d.a, d.b].map((v, j) => {
+                const p = j ? b : a;
+                return (
+                  <div key={j} className={`mt-2 grid items-center gap-2.5 ${mixed ? "grid-cols-[5rem_1fr_8.5rem]" : "grid-cols-[5rem_1fr_5rem]"}`}>
+                    <span className="truncate text-[13px] text-mute">{j ? nb : na}</span>
+                    <Bar pct={v === undefined ? 0 : (v / max) * 100} delay={0.1 + i * 0.05 + j * 0.06} dim={j === 1} className="mt-0" />
+                    <span className="tabular whitespace-nowrap text-right text-[15px] font-semibold">
+                      <span className="sr-only">{p.name}: </span>
+                      {v === undefined ? (
+                        <span className="text-[13px] font-normal text-mute">Not listed</span>
+                      ) : (
+                        <>
+                          <Num v={v} />
+                          <span className="ml-0.5 text-xs font-normal text-mute">
+                            {m.unit}
+                            {mixed && ` /${basisLabel(p)}`}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-xs text-mute">Bars are scaled to the larger of the two values in each row.</p>
 
-      <section className="mt-14">
-        <div className="flex items-baseline justify-between border-b border-line pb-3">
-          <Eyebrow>
-            {a.basis === b.basis ? `Per ${basisLabel(a)}` : `A per ${basisLabel(a)}, B per ${basisLabel(b)}`}
-          </Eyebrow>
-          <span className="flex gap-4 text-sm text-mute" aria-hidden>
-            <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-ink" />A</span>
-            <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-mute" />B</span>
-          </span>
-        </div>
-        <ul>
-          {diffs.map((d, i) => {
-            const m = NUTRIENTS.find((x) => x.key === d.key)!;
-            const max = Math.max(d.a ?? 0, d.b ?? 0) || 1;
-            return (
-              <li key={d.key} className="py-4">
-                <div className="flex items-baseline justify-between">
-                  <span className={m.sub ? "pl-5 text-mute" : "text-lg"}>{m.label}</span>
-                  <span className="text-xs text-mute">{d.text}</span>
-                </div>
-                {[d.a, d.b].map((v, j) => {
-                  const p = j ? b : a;
-                  return (
-                    <div key={j} className={`mt-3 grid items-center gap-3 ${a.basis === b.basis ? "grid-cols-[1rem_1fr_6rem]" : "grid-cols-[1rem_1fr_9.5rem]"}`}>
-                      <span className="text-xs font-medium text-mute">
-                        {j ? "B" : "A"}
-                        <span className="sr-only">, {p.name}:</span>
-                      </span>
-                      <Bar pct={v === undefined ? 0 : (v / max) * 100} delay={0.15 + i * 0.06 + j * 0.08} dim={j === 1} />
-                      <span className="tabular whitespace-nowrap text-right text-lg font-medium">
-                        {v === undefined ? (
-                          <span className="text-sm text-mute">Not listed</span>
-                        ) : (
-                          <>
-                            <Num v={v} />
-                            <span className="ml-1 text-xs text-mute">
-                              {m.unit}
-                              {a.basis !== b.basis && ` /${basisLabel(p)}`}
-                            </span>
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  );
-                })}
-              </li>
-            );
-          })}
-        </ul>
-        <p className="mt-4 text-xs text-mute">Bars are scaled to the larger of the two values in each row.</p>
-      </section>
-
-      <section className="mt-14 grid gap-10 sm:grid-cols-2">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {[a, b].map((p, i) => (
-          <div key={p.code}>
-            <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-              <Tag>{i ? "B" : "A"}</Tag> {p.name}
-            </h2>
-            <h3 className="mt-4 text-sm font-medium">Allergens declared</h3>
+          <div key={p.code} className="rounded-[24px] bg-card px-5 py-4">
+            <h2 className="text-[17px] font-semibold">{i ? nb : na}</h2>
+            <h3 className="mt-3 text-sm font-medium">Allergens declared</h3>
             <Chips items={p.allergens} mine={allergies} empty="None declared in the record." />
-            <AllergenNote />
-            <h3 className="mt-6 text-sm font-medium">Additives</h3>
-            <p className="mt-3 text-sm leading-relaxed text-ink/85">
-              {p.additives.length ? p.additives.map((x) => (x.name ? `${x.code} ${x.name}` : x.code)).join(", ") : <span className="text-mute">None listed in the record.</span>}
+            <h3 className="mt-4 text-sm font-medium">Additives</h3>
+            <p className="mt-1.5 text-sm leading-relaxed text-ink/85">
+              {p.additives.length ? (
+                p.additives.map((x) => (x.name ? `${x.code} ${x.name}` : x.code)).join(", ")
+              ) : (
+                <span className="text-mute">None listed in the record.</span>
+              )}
             </p>
+            <AllergenNote />
           </div>
         ))}
-      </section>
-
-      <div className="mt-14 flex flex-wrap gap-3">
-        <button onClick={onBack} className="h-12 rounded-full bg-ink px-6 font-medium text-canvas">
-          New comparison
-        </button>
       </div>
+
+      <motion.button whileTap={{ scale: 0.98 }} onClick={props.onNew} className="mt-6 h-14 w-full rounded-full bg-ink text-base font-semibold text-canvas">
+        New comparison
+      </motion.button>
     </article>
   );
 }
 
 /* ───────────────────────── Bits ───────────────────────── */
+
+const LINE_ICON: Record<Line["kind"], Icon> = {
+  sugars: CubeIcon, carbs: GrainsIcon, fat: DropIcon, saturated: DropIcon, protein: BarbellIcon, fiber: LeafIcon,
+  energy: ForkKnifeIcon, salt: GrainsIcon, caffeine: CoffeeIcon, allergen: WarningIcon,
+};
+
+function LineCard({ title, lines }: { title: string; lines: Line[] }) {
+  return (
+    <section className="mt-4 rounded-[26px] bg-card px-5 pb-1.5 pt-3.5">
+      <h2 className="text-[13px] font-medium text-mute">{title}</h2>
+      <ul>
+        {lines.map((l, i) => {
+          const I = LINE_ICON[l.kind];
+          return (
+            <motion.li
+              key={l.text}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15 + i * 0.07, duration: 0.4, ease: EASE }}
+              className={`flex items-center gap-3.5 py-3 ${i ? "border-t border-line" : ""}`}
+            >
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[13px] bg-accent-soft text-accent">
+                <I size={20} weight="bold" aria-hidden />
+              </span>
+              <span>
+                <span className="block text-[16px] leading-snug">{l.text}</span>
+                <span className="text-[13px] text-mute">{l.note}</span>
+              </span>
+            </motion.li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function ScanCard({ title, sub, onClick, disabled }: { title: string; sub: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <motion.button
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      disabled={disabled}
+      className="mt-6 flex w-full items-center gap-4 rounded-[28px] bg-ink p-5 text-left text-canvas disabled:opacity-60"
+    >
+      <span className="grid h-14 w-14 shrink-0 place-items-center rounded-[18px] bg-accent text-white">
+        <BarcodeIcon size={30} weight="bold" aria-hidden />
+      </span>
+      <span>
+        <span className="block text-[20px] font-semibold">{title}</span>
+        <span className="text-sm opacity-75">{sub}</span>
+      </span>
+    </motion.button>
+  );
+}
+
+function TypeInstead({ typing, onType, busy, onSubmit }: { typing: boolean; onType: () => void; busy: boolean; onSubmit: (code: string) => void }) {
+  return typing ? (
+    <CodeForm busy={busy} onSubmit={onSubmit} />
+  ) : (
+    <button onClick={onType} className="mx-auto mt-4 block text-[15px] text-mute underline underline-offset-4">
+      Type the number instead
+    </button>
+  );
+}
+
+function CodeForm({ busy, onSubmit }: { busy: boolean; onSubmit: (code: string) => void }) {
+  const [code, setCode] = useState("");
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit(code);
+      }}
+      className="mt-4"
+    >
+      <label htmlFor="code" className="mb-1.5 block text-sm text-mute">
+        Barcode number
+      </label>
+      <div className="flex items-center rounded-full bg-card pl-5 ring-1 ring-line focus-within:ring-2 focus-within:ring-ink">
+        <input
+          id="code"
+          inputMode="numeric"
+          autoComplete="off"
+          autoFocus
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/[^\d ]/g, ""))}
+          className="tabular h-14 min-w-0 flex-1 bg-transparent text-lg tracking-wider outline-none"
+        />
+        <button disabled={busy || !code.trim()} className="m-1.5 h-11 rounded-full bg-ink px-5 font-medium text-canvas transition disabled:opacity-30">
+          Look up
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ErrorText({ error }: { error: React.ReactNode }) {
+  return (
+    <AnimatePresence>
+      {error && (
+        <motion.p role="alert" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-4 rounded-2xl bg-card px-4 py-3 text-sm">
+          {error}
+        </motion.p>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function ProductCard({ p, onClick, disabled }: { p: Product; onClick?: () => void; disabled?: boolean }) {
+  const body = (
+    <>
+      <Thumb p={p} size="h-[120px] w-full" />
+      <span className="mt-2.5 block truncate text-[15px] font-medium">{p.name}</span>
+      <span className="block truncate text-[13px] text-mute">{[p.brand, p.quantity].filter(Boolean).join(", ") || p.code}</span>
+    </>
+  );
+  return onClick ? (
+    <motion.button whileTap={{ scale: 0.97 }} onClick={onClick} disabled={disabled} className="min-w-0 rounded-[22px] bg-card p-3 text-left disabled:opacity-40">
+      {body}
+    </motion.button>
+  ) : (
+    <div className="min-w-0 rounded-[22px] bg-card p-3">{body}</div>
+  );
+}
+
+function PairList({ pairs, name, busy, onPair }: { pairs: [string, string][]; name: (c: string) => string; busy: boolean; onPair: (a: string, b: string) => void }) {
+  return (
+    <>
+      <h2 className="mb-3 mt-8 text-[19px] font-semibold">Recent comparisons</h2>
+      <ul className="grid gap-2">
+        {pairs.map(([a, b]) => (
+          <li key={a + b}>
+            <button
+              onClick={() => onPair(a, b)}
+              disabled={busy}
+              className="flex w-full items-center gap-3 rounded-[18px] bg-card px-4 py-3.5 text-left text-[15px] transition active:scale-[0.99] disabled:opacity-40"
+            >
+              <span className="min-w-0 flex-1 truncate">{name(a)}</span>
+              <span className="text-sm text-mute">vs</span>
+              <span className="min-w-0 flex-1 truncate text-right">{name(b)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
 
 function Num({ v }: { v: number }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -759,20 +1019,22 @@ function Num({ v }: { v: number }) {
   return <span ref={ref}>{fmt(v)}</span>;
 }
 
-function Bar({ pct, delay = 0, dim, limit }: { pct: number; delay?: number; dim?: boolean; limit?: { at: number; label: string } }) {
+function Bar({
+  pct, delay = 0, dim, limit, className = "mt-2.5",
+}: { pct: number; delay?: number; dim?: boolean; limit?: { at: number; label: string }; className?: string }) {
   const still = useReducedMotion();
   return (
-    <div className="relative mt-3" aria-hidden>
-      <div className="h-1.5">
+    <div className={`relative ${className}`} aria-hidden>
+      <div className="h-2">
         <motion.div
-          className={`h-full rounded-full ${dim ? "bg-mute" : "bg-ink"}`}
+          className={`h-full rounded-full ${dim ? "bg-mute/50" : "bg-ink"}`}
           initial={still ? false : { width: 0 }}
-          animate={{ width: `${Math.max(pct, pct > 0 ? 1.5 : 0)}%` }}
+          animate={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }}
           transition={still ? { duration: 0 } : { duration: 1.1, delay, ease: EASE }}
         />
       </div>
       {limit && (
-        // Daily-limit marker: a tick crossing the bar, a hairline over the room left before it, and a label.
+        // Daily-limit marker: a tick crossing the bar, a dashed line over the room left before it, and a label.
         <motion.div
           className="relative h-5"
           initial={still ? false : { opacity: 0 }}
@@ -780,13 +1042,10 @@ function Bar({ pct, delay = 0, dim, limit }: { pct: number; delay?: number; dim?
           transition={{ delay: still ? 0 : delay + 0.9, duration: 0.4 }}
         >
           {pct < limit.at && (
-            <span
-              className="absolute top-0 border-t border-dashed border-mute"
-              style={{ left: `${pct}%`, width: `${limit.at - pct}%`, marginTop: -3 }}
-            />
+            <span className="absolute top-0 border-t border-dashed border-mute" style={{ left: `${pct}%`, width: `${limit.at - pct}%`, marginTop: -4 }} />
           )}
           <span
-            className="absolute -top-3 h-[18px] w-0.5 rounded-full bg-ink ring-2 ring-canvas"
+            className="absolute -top-3.5 h-5 w-0.5 rounded-full bg-ink ring-2 ring-card"
             style={{ left: `${limit.at}%`, transform: `translateX(${limit.at >= 99 ? "-100%" : "-50%"})` }}
           />
           <span
@@ -804,32 +1063,30 @@ function Bar({ pct, delay = 0, dim, limit }: { pct: number; delay?: number; dim?
 function AllergyWarning({ p, allergies, label, className = "" }: { p: Product; allergies: string[]; label?: string; className?: string }) {
   const { contains, traces } = allergyHits(p, allergies);
   if (!contains.length && !traces.length) return null;
-  const list = (t: string[]) => t.map(allergenLabel).join(", ");
+  const list = (t: string[]) => t.map((x) => allergenLabel(x).toLowerCase()).join(", ");
   return (
     <motion.div
       role="alert"
-      initial={{ opacity: 0, y: 12, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ delay: 0.2, duration: 0.5, ease: EASE }}
-      className={`mt-4 flex gap-4 rounded-2xl bg-ink p-5 text-canvas ${className}`}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.15, duration: 0.45, ease: EASE }}
+      className={`flex gap-3 rounded-[22px] bg-ink px-4 py-3.5 text-canvas ${className}`}
     >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-canvas text-ink">
-        <WarningIcon size={18} weight="bold" aria-hidden />
-      </span>
-      <div>
-        <p className="text-xs font-medium text-canvas/70">{label ? `Product ${label}: on your allergy list` : "On your allergy list"}</p>
-        {contains.length > 0 && <p className="mt-1 text-lg font-semibold leading-snug">Contains {list(contains)}.</p>}
-        {traces.length > 0 && <p className="mt-1 leading-snug">May contain traces of {list(traces)}.</p>}
-        <p className="mt-2 text-xs text-canvas/60">From the product&apos;s record. Check the pack to confirm.</p>
-      </div>
+      <WarningIcon size={22} weight="fill" className="mt-0.5 shrink-0" aria-hidden />
+      <p className="text-[15px] leading-snug">
+        {label && <span className="font-semibold">{label}: </span>}
+        {contains.length > 0 && <b className="font-semibold">Contains {list(contains)}. </b>}
+        {traces.length > 0 && <b className="font-semibold">May contain {list(traces)}. </b>}
+        It&apos;s on your list. Check the pack to be sure.
+      </p>
     </motion.div>
   );
 }
 
 const AllergenNote = () => (
-  <p className="mt-4 text-xs leading-relaxed text-mute">
-    Taken from the product&apos;s record, which can be incomplete or wrong. A missing allergen here doesn&apos;t mean the
-    product is free of it. Always read the pack.
+  <p className="mt-3 text-xs leading-relaxed text-mute">
+    From the product&apos;s record, which can be incomplete or wrong. A missing allergen here doesn&apos;t mean the product
+    is free of it. Always read the pack.
   </p>
 );
 
@@ -839,15 +1096,15 @@ function IngredientList({ p }: { p: Product }) {
   const [open, setOpen] = useState<string | null>(null);
   if (!p.parts.length) return null;
   return (
-    <section className="mt-16">
-      <div className="flex items-baseline justify-between border-b border-line pb-3">
-        <Eyebrow>What&apos;s in it</Eyebrow>
-        <span className="text-sm text-mute">Tap one to learn more</span>
+    <section className="mt-4 rounded-[24px] bg-card px-5 pb-3 pt-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-[17px] font-semibold">What&apos;s in it</h2>
+        <span className="text-[13px] text-mute">Tap one to learn more</span>
       </div>
       {p.analysis.length > 0 && (
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           {p.analysis.map((t) => (
-            <span key={t} className="rounded-full border border-line px-3 py-1 text-xs text-ink/85">
+            <span key={t} className="rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent">
               {t}
             </span>
           ))}
@@ -858,29 +1115,25 @@ function IngredientList({ p }: { p: Product }) {
           const key = `${x.id}-${i}`;
           const isOpen = open === key;
           return (
-            <li key={key}>
-              <button
-                onClick={() => setOpen(isOpen ? null : key)}
-                aria-expanded={isOpen}
-                className="w-full py-4 text-left"
-              >
+            <li key={key} className={i ? "border-t border-line" : ""}>
+              <button onClick={() => setOpen(isOpen ? null : key)} aria-expanded={isOpen} className="w-full py-3.5 text-left">
                 <span className="flex items-baseline justify-between gap-4">
                   <span className="min-w-0">
-                    <span className="text-lg">{cap(x.name)}</span>
-                    {x.sub.length > 0 && <span className="ml-2 text-sm text-mute">({x.sub.join(", ")})</span>}
+                    <span className="text-[16px]">{cap(x.name)}</span>
+                    {x.sub.length > 0 && <span className="ml-2 text-[13px] text-mute">({x.sub.join(", ")})</span>}
                   </span>
-                  <span className="tabular shrink-0 text-right">
+                  <span className="tabular flex shrink-0 items-center text-right text-[15px]">
                     <Pct x={x} />
-                    <motion.span animate={{ rotate: isOpen ? 45 : 0 }} className="ml-3 inline-flex align-middle text-mute">
+                    <motion.span animate={{ rotate: isOpen ? 45 : 0 }} className="ml-3 inline-flex text-mute">
                       <PlusIcon size={16} weight="bold" aria-hidden />
                     </motion.span>
                   </span>
                 </span>
-                {x.pct !== undefined && x.pct > 0 && <Bar pct={Math.min(100, x.pct)} dim={!x.declared} delay={0.05 * i} />}
+                {x.pct !== undefined && x.pct > 0 && <Bar pct={Math.min(100, x.pct)} dim={!x.declared} delay={0.04 * i} />}
                 {x.flags.length > 0 && (
                   <span className="mt-2 flex flex-wrap gap-1.5">
                     {x.flags.map((f) => (
-                      <span key={f} className="rounded-full border border-ink/40 px-2 py-0.5 text-xs">
+                      <span key={f} className="rounded-full border border-line px-2 py-0.5 text-xs text-mute">
                         {f}
                       </span>
                     ))}
@@ -893,7 +1146,7 @@ function IngredientList({ p }: { p: Product }) {
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: "auto", opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.35, ease: EASE }}
+                    transition={{ duration: 0.3, ease: EASE }}
                     className="overflow-hidden"
                   >
                     <Explain x={x} />
@@ -904,10 +1157,10 @@ function IngredientList({ p }: { p: Product }) {
           );
         })}
       </ul>
-      <p className="mt-4 text-xs leading-relaxed text-mute">
-        Percentages without ≈ are printed on the pack. The rest are Open Food Facts estimates from the ingredient order and
-        nutrition values, so treat them as rough. The vegan and palm oil notes are its estimates too, and this breakdown can
-        come from a different version or language of the label than the printed text above.
+      <p className="mt-2 text-xs leading-relaxed text-mute">
+        Percentages without ≈ are printed on the pack. The rest are Open Food Facts estimates, so treat them as rough. The
+        vegan and palm oil notes are its estimates too, and this breakdown can come from a different version or language of
+        the label.
       </p>
     </section>
   );
@@ -915,7 +1168,7 @@ function IngredientList({ p }: { p: Product }) {
 
 function Pct({ x }: { x: Ingredient }) {
   if (x.pct === undefined) return null;
-  if (x.declared) return <span className="font-medium">{+x.pct.toFixed(1)}%</span>;
+  if (x.declared) return <span className="font-semibold">{+x.pct.toFixed(1)}%</span>;
   return <span className="text-mute">{x.pct < 1 ? "<1%" : `≈${Math.round(x.pct)}%`}</span>;
 }
 
@@ -942,7 +1195,7 @@ function Explain({ x }: { x: Ingredient }) {
   }, [key, x.id, x.name, attempt]);
 
   return (
-    <div className="pb-5 pr-6" role="status" aria-live="polite">
+    <div className="pb-4 pr-6" role="status" aria-live="polite">
       {state === "loading" ? (
         <span className="block py-2">
           <Dots label="Loading explanation" color="bg-mute" />
@@ -957,17 +1210,13 @@ function Explain({ x }: { x: Ingredient }) {
       ) : "none" in state ? (
         <p className="text-sm text-mute">No encyclopedia entry found for this one.</p>
       ) : (
-        <>
-          {state.about && (
-            <p className="mb-1 text-xs text-mute">
-              No article for {x.name} itself. Here&apos;s the broader {state.about}:
-            </p>
-          )}
-          <p className="leading-relaxed text-ink/85">{state.extract}</p>
+        <div className="rounded-2xl bg-canvas px-4 py-3">
+          {state.about && <p className="mb-1 text-xs text-mute">No article for {x.name} itself. Here&apos;s the broader {state.about}:</p>}
+          <p className="text-[15px] leading-relaxed text-ink/85">{state.extract}</p>
           <a href={state.url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-mute underline underline-offset-2">
             Excerpt from Wikipedia, “{state.title}”, CC BY-SA 4.0
           </a>
-        </>
+        </div>
       )}
     </div>
   );
@@ -980,26 +1229,26 @@ function Additives({ items }: { items: Additive[] }) {
     no: "EFSA estimated typical intakes from the overall diet stay below this amount",
   };
   return (
-    <section className="mt-16">
-      <div className="flex items-baseline justify-between border-b border-line pb-3">
-        <Eyebrow>Additives</Eyebrow>
-        <span className="text-sm text-mute">{items.length} listed</span>
+    <section className="mt-4 rounded-[24px] bg-card px-5 pb-4 pt-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-[17px] font-semibold">Additives</h2>
+        <span className="text-[13px] text-mute">{items.length} listed</span>
       </div>
-      {!items.length && <p className="py-6 text-mute">None listed in the record.</p>}
+      {!items.length && <p className="pt-3 text-[15px] text-mute">None listed in the record.</p>}
       <ul>
-        {items.map((a) => (
-          <li key={a.code} className="py-4">
-            <p className="flex items-baseline gap-3">
-              <span className="font-mono text-sm text-mute">{a.code}</span>
-              <span className="text-lg">{a.name || "Unnamed in the database"}</span>
+        {items.map((a, i) => (
+          <li key={a.code} className={`py-3.5 ${i ? "border-t border-line" : ""}`}>
+            <p className="flex items-baseline gap-2.5">
+              <span className="text-sm font-medium text-mute">{a.code}</span>
+              <span className="text-[16px]">{a.name || "Unnamed in the database"}</span>
             </p>
             {a.adi ? (
-              <p className="mt-2 text-sm text-ink/85">
-                Safe daily amount (ADI): {a.adi} mg per kg of body weight, so about{" "}
-                {Math.round(Number(a.adi) * 70).toLocaleString("en")} mg a day for a 70 kg adult.
+              <p className="mt-1.5 text-sm text-ink/85">
+                Safe daily amount: {a.adi} mg per kg of body weight, about {Math.round(Number(a.adi) * 70).toLocaleString("en")} mg a day
+                for a 70 kg adult.
               </p>
             ) : (
-              <p className="mt-2 text-sm text-mute">No safe daily amount (ADI) recorded for it in the database.</p>
+              <p className="mt-1.5 text-sm text-mute">No safe daily amount recorded for it in the database.</p>
             )}
             {a.risk && (
               <p className="mt-1 text-sm text-mute">
@@ -1022,10 +1271,10 @@ function Additives({ items }: { items: Additive[] }) {
         ))}
       </ul>
       {items.length > 0 && (
-        <p className="mt-4 text-xs leading-relaxed text-mute">
-          An ADI is the amount EFSA, the EU food safety agency, considers can be eaten every day over a lifetime without
-          appreciable health risk. Packs don&apos;t state how much of each additive they contain, so this can&apos;t show how
-          much of the ADI one serving uses. Evaluations can be revised, so check the year.
+        <p className="mt-1 text-xs leading-relaxed text-mute">
+          The safe daily amount (ADI) is what EFSA, the EU food safety agency, considers can be eaten every day over a lifetime
+          without appreciable health risk. Packs don&apos;t state how much of each additive they contain, so this can&apos;t show
+          how much one serving uses. Evaluations can be revised, so check the year.
         </p>
       )}
     </section>
@@ -1034,10 +1283,10 @@ function Additives({ items }: { items: Additive[] }) {
 
 function Thumb({ p, size, big }: { p: Product; size: string; big?: boolean }) {
   return (
-    <div className={`${size} flex items-center justify-center overflow-hidden rounded-2xl bg-photo`}>
+    <div className={`${size} flex items-center justify-center overflow-hidden bg-photo ${big ? "rounded-[28px]" : "rounded-2xl"}`}>
       {p.image ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={p.image} alt={p.name} className={`h-full w-full object-contain ${big ? "p-[12%]" : "p-2"} mix-blend-multiply`} />
+        <img src={p.image} alt={p.name} className={`h-full w-full object-contain mix-blend-multiply ${big ? "p-[8%]" : "p-2"}`} />
       ) : (
         <span className="text-4xl font-semibold text-neutral-400">{p.name.slice(0, 1)}</span>
       )}
@@ -1046,34 +1295,20 @@ function Thumb({ p, size, big }: { p: Product; size: string; big?: boolean }) {
 }
 
 function Chips({ items, empty, mine = [] }: { items: string[]; empty?: string; mine?: string[] }) {
-  if (!items.length) return <p className="mt-4 text-sm text-mute">{empty}</p>;
+  if (!items.length) return <p className="mt-2 text-sm text-mute">{empty}</p>;
   return (
-    <ul className="mt-4 flex flex-wrap gap-2">
-      {items.map((t, i) => (
-        <motion.li
+    <ul className="mt-2.5 flex flex-wrap gap-2">
+      {items.map((t) => (
+        <li
           key={t}
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.3 + i * 0.05 }}
-          className={`rounded-full border px-3.5 py-1.5 text-sm capitalize ${mine.includes(t) ? "border-ink bg-ink font-medium text-canvas" : "border-ink/60"}`}
+          className={`rounded-full px-3.5 py-1.5 text-sm capitalize ${mine.includes(t) ? "bg-ink font-medium text-canvas" : "bg-canvas"}`}
         >
           {allergenLabel(t)}
-        </motion.li>
+        </li>
       ))}
     </ul>
   );
 }
-
-const Eyebrow = ({ children }: { children: React.ReactNode }) => (
-  <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
-);
-
-/** Small A / B marker used wherever two products sit side by side. */
-const Tag = ({ children }: { children: React.ReactNode }) => (
-  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-ink px-1.5 text-[11px] font-semibold text-canvas">
-    {children}
-  </span>
-);
 
 function ThemeToggle() {
   const [dark, setDark] = useState<boolean | null>(null); // unknown until mounted, avoids a hydration mismatch
@@ -1093,9 +1328,9 @@ function ThemeToggle() {
     <button
       onClick={flip}
       aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
-      className="flex h-9 w-9 items-center justify-center rounded-full border border-line text-ink transition hover:bg-card active:scale-95"
+      className="grid h-10 w-10 place-items-center rounded-full text-ink transition active:scale-95"
     >
-      {dark === null ? null : dark ? <SunIcon size={16} weight="bold" aria-hidden /> : <MoonIcon size={16} weight="bold" aria-hidden />}
+      {dark === null ? null : dark ? <SunIcon size={21} aria-hidden /> : <MoonIcon size={21} aria-hidden />}
     </button>
   );
 }
@@ -1103,8 +1338,8 @@ function ThemeToggle() {
 const basisLabel = (p: Product) => (p.basis === "100ml" ? "100 ml" : "100 g");
 
 const Footer = () => (
-  <footer className="mt-24 space-y-4 border-t border-line pt-8 text-xs leading-relaxed text-mute">
-    <p className="text-ink/85">
+  <footer className="mt-16 space-y-3 border-t border-line pt-6 text-xs leading-relaxed text-mute">
+    <p className="text-ink/80">
       General information, not medical or dietary advice. Product records are written by volunteers and can be incomplete,
       out of date or wrong. The printed pack is the final word, and if you have an allergy or a medical condition, rely on
       the pack and your doctor, not this app.
@@ -1146,7 +1381,7 @@ function Dots({ label = "Loading", color = "bg-canvas" }: { label?: string; colo
   const still = useReducedMotion();
   return (
     <span className="flex gap-1">
-      <span className="sr-only">{label}</span>
+      {label && <span className="sr-only">{label}</span>}
       {[0, 1, 2].map((i) => (
         <motion.i
           key={i}
@@ -1158,4 +1393,3 @@ function Dots({ label = "Loading", color = "bg-canvas" }: { label?: string; colo
     </span>
   );
 }
-

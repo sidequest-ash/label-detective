@@ -191,7 +191,7 @@ export const fmt = (x: number, target = x) =>
   target >= 100 ? Math.round(x).toLocaleString("en") : target >= 1 ? x.toFixed(1) : x.toFixed(2);
 
 const per = (p: Product) => (p.basis === "100ml" ? "100 ml" : "100 g");
-const amount = (x: number, ml: boolean) =>
+export const amount = (x: number, ml: boolean) =>
   x >= 1000 ? `${(x / 1000).toFixed(1)} ${ml ? "L" : "kg"}` : `${x >= 50 ? Math.round(x / 5) * 5 : Math.round(x)} ${ml ? "ml" : "g"}`;
 
 /** One neutral, factual sentence about the biggest macronutrient. */
@@ -252,6 +252,92 @@ export function allergyHits(p: Product, mine: string[]) {
 
 export const allergenLabel = (tag: string) => ALLERGENS.find((a) => a.tag === tag)?.label ?? tag;
 
+/* ── Plain-language summaries (UI copy) ── */
+
+export type Line = { kind: NutrientKey | "allergen"; text: string; note: string };
+
+const FRACTIONS: [number, string][] = [
+  [66, "Two thirds or more"], [50, "More than half"], [40, "Nearly half"],
+  [30, "About a third"], [20, "About a fifth"], [10, "About a tenth"],
+];
+const fraction = (v: number) => FRACTIONS.find(([min]) => v >= min)?.[1];
+const WORD: Record<NutrientKey, string> = {
+  energy: "energy", fat: "fat", saturated: "saturated fat", carbs: "carbohydrate", sugars: "sugar",
+  fiber: "fibre", protein: "protein", salt: "salt", caffeine: "caffeine",
+};
+const kcalRound = (x: number) => (x >= 50 ? Math.round(x / 5) * 5 : Math.round(x));
+
+/** Up to four neutral "at a glance" lines: the two biggest parts, energy, declared allergens. */
+export function glance(p: Product): Line[] {
+  const unit = per(p);
+  const sugarOrCarbs: NutrientKey = p.n.sugars !== undefined ? "sugars" : "carbs";
+  const parts = ([sugarOrCarbs, "fat", "protein", "fiber"] as NutrientKey[])
+    .filter((k) => p.n[k] !== undefined && fraction(p.n[k]!))
+    .sort((a, b) => p.n[b]! - p.n[a]!)
+    .slice(0, 2)
+    .map((k): Line => ({ kind: k, text: `${fraction(p.n[k]!)} of it is ${WORD[k]}`, note: `${fmt(p.n[k]!)} g in every ${unit}` }));
+  const lines = [...parts];
+  const e = p.n.energy;
+  if (e !== undefined) {
+    const kcal = p.serving ? (e * p.serving) / 100 : e;
+    lines.push({
+      kind: "energy",
+      text: p.serving ? `One ${amount(p.serving, p.basis === "100ml")} serving is about ${kcalRound(kcal)} kcal` : `${fmt(e)} kcal in every ${unit}`,
+      note: `${Math.max(1, Math.round((kcal / 2000) * 100))}% of a typical adult's day`,
+    });
+  }
+  if (p.allergens.length)
+    lines.push({ kind: "allergen", text: `Contains ${p.allergens.map((t) => allergenLabel(t).toLowerCase()).join(", ")}`, note: "As declared on the product's record" });
+  return lines.slice(0, 4);
+}
+
+/** One short note for a nutrient amount (per 100 g/ml or per serving). */
+export function nutrientNote(key: NutrientKey, v: number): string {
+  const meta = NUTRIENTS.find((m) => m.key === key)!;
+  const lim = LIMITS[key];
+  if (lim) {
+    const pct = (v / lim.max) * 100;
+    if (v === 0) return `None, so nothing toward the ${lim.by} daily limit`;
+    if (pct >= 100) return `More than the ${lim.by} daily limit (${lim.max} ${meta.unit})`;
+    if (pct < 5) return `Very little, ${pct < 1 ? "under 1" : Math.round(pct)}% of the ${lim.by} daily limit`;
+    return `${Math.round(pct)}% of the ${lim.by} daily limit (${lim.max} ${meta.unit})`;
+  }
+  return meta.ri ? `${Math.round((v / meta.ri) * 100)}% of a typical adult's day` : "";
+}
+
+/** Shortest names that still tell two products apart ("Coca-Cola" vs "Coca-Cola Zero"). */
+export function shortNames(a: Product, b: Product): [string, string] {
+  const [x, y] = [a.name.split(/\s+/), b.name.split(/\s+/)];
+  let i = 0;
+  while (i < x.length && i < y.length && x[i].toLowerCase() === y[i].toLowerCase()) i++;
+  return [x.slice(0, i + 1).join(" "), y.slice(0, i + 1).join(" ")];
+}
+
+/** Up to three plain sentences about the biggest differences. */
+export function compareLines(a: Product, b: Product): Line[] {
+  const [na, nb] = shortNames(a, b);
+  const diffs: Line[] = compare(a, b)
+    .filter((d) => d.weight > 0)
+    .sort((x, y) => y.weight - x.weight)
+    .slice(0, 3)
+    .map((d) => {
+      const unit = NUTRIENTS.find((m) => m.key === d.key)!.unit;
+      const aHigh = d.a! > d.b!;
+      const [hiName, loName, hi, lo] = aHigh ? [na, nb, d.a!, d.b!] : [nb, na, d.b!, d.a!];
+      const r = lo > 0 ? hi / lo : Infinity;
+      const v = (x: number) => `${fmt(x, unit === "g" ? x : 100)} ${unit}`;
+      if (r >= 1.9 && r !== Infinity) {
+        const times = r < 2.2 ? "about twice" : r < 2.8 ? "about two and a half times" : `about ${Math.round(r)} times`;
+        return { kind: d.key, text: `${hiName} has ${times} the ${WORD[d.key]}`, note: `${v(hi)} vs ${v(lo)}` };
+      }
+      return { kind: d.key, text: `${loName} has ${v(hi - lo)} less ${WORD[d.key]}`, note: `${v(lo)} vs ${v(hi)}` };
+    });
+  const only: Line[] = (["fiber", "caffeine"] as NutrientKey[])
+    .filter((k) => (a.n[k] === undefined) !== (b.n[k] === undefined))
+    .map((k) => ({ kind: k, text: `Only ${a.n[k] !== undefined ? na : nb} lists ${WORD[k]}`, note: `${fmt((a.n[k] ?? b.n[k])!)} ${k === "caffeine" ? "mg" : "g"}` }));
+  return [...diffs.slice(0, only.length ? 2 : 3), ...only].slice(0, 3);
+}
+
 // Self-check: `node --experimental-strip-types lib/product.ts`
 if (typeof process !== "undefined" && process.argv[1]?.endsWith("product.ts")) {
   const assert = (ok: boolean, msg: string) => { if (!ok) { console.error("FAIL", msg); process.exit(1); } };
@@ -290,5 +376,21 @@ if (typeof process !== "undefined" && process.argv[1]?.endsWith("product.ts")) {
   assert(limitLine(p, "salt")!.startsWith("None in it"), "zero salt");
   const hits = allergyHits(p, ["milk", "nuts"]);
   assert(hits.contains.join() === "milk" && hits.traces.join() === "nuts", "allergy hits");
+  const nut = normalize("5", { product_name: "Nutella", quantity: "400 g", serving_quantity: 15, allergens_tags: ["en:nuts"],
+    nutriments: { "energy-kcal_100g": 539, fat_100g: 30.9, sugars_100g: 56.3, carbohydrates_100g: 57.5, proteins_100g: 6.3, salt_100g: 0.11, "saturated-fat_100g": 10.6 } });
+  const pr = normalize("6", { product_name: "Prince Goût Chocolat", quantity: "300 g",
+    nutriments: { "energy-kcal_100g": 467, fat_100g: 17, sugars_100g: 32, carbohydrates_100g: 69, proteins_100g: 6.3, salt_100g: 0.49, "saturated-fat_100g": 5.6, fiber_100g: 4 } });
+  const g = glance(nut).map((l) => l.text);
+  assert(JSON.stringify(g) === JSON.stringify(["More than half of it is sugar", "About a third of it is fat", "One 15 g serving is about 80 kcal", "Contains tree nuts"]), JSON.stringify(g));
+  assert(nutrientNote("sugars", 56.3) === "More than the WHO daily limit (50 g)", nutrientNote("sugars", 56.3));
+  assert(nutrientNote("salt", 0.11) === "Very little, 2% of the WHO daily limit", nutrientNote("salt", 0.11));
+  assert(nutrientNote("fat", 30.9) === "44% of a typical adult's day", nutrientNote("fat", 30.9));
+  assert(shortNames(nut, pr).join("|") === "Nutella|Prince", shortNames(nut, pr).join("|"));
+  const coke = normalize("7", { product_name: "Coca-Cola" }), zero = normalize("8", { product_name: "Coca-Cola Zero Sugar" });
+  assert(shortNames(coke, zero).join("|") === "Coca-Cola|Coca-Cola Zero", shortNames(coke, zero).join("|"));
+  const c = compareLines(nut, pr).map((l) => l.text);
+  assert(c[0] === "Prince has 24.3 g less sugar" && c.includes("Only Prince lists fibre"), JSON.stringify(c));
+  const noServing = { ...nut, serving: null };
+  assert(glance(noServing)[2].text === "539 kcal in every 100 g", glance(noServing)[2].text);
   console.log("ok");
 }

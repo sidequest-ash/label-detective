@@ -1,9 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Outfit } from "next/font/google";
 import "./globals.css";
 
-const sans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+const outfit = Outfit({ variable: "--font-outfit", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Snack Intel",
@@ -14,8 +13,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f3f3f4" },
-    { media: "(prefers-color-scheme: dark)", color: "#0d0d10" },
+    { media: "(prefers-color-scheme: light)", color: "#f1f2f4" },
+    { media: "(prefers-color-scheme: dark)", color: "#0e0f11" },
   ],
 };
 
@@ -24,7 +23,7 @@ const themeScript = `try{var t=localStorage.getItem("ld:theme");if(t==="light"||
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${sans.variable} ${mono.variable} antialiased`} suppressHydrationWarning>
+    <html lang="en" className={`${outfit.variable} antialiased`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
